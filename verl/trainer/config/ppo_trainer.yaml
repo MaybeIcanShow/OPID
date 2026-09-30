@@ -348,3 +348,7 @@ env:
     generalization_level: 0
     simplifications_preset: easy
     jar_path: null
+  toolbench:
+    cache_root: data/StableToolBench/server/tool_response_cache
+    service_url: "http://127.0.0.1:12001/virtual"
+    request_timeout: 8

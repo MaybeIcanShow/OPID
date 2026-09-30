@@ -813,6 +813,28 @@ class AppWorldEnvironmentManager(EnvironmentManagerBase):
                 postprocess_text_obs.append(obs)
         return postprocess_text_obs
     
+class ToolBenchEnvironmentManager(EnvironmentManagerBase):
+    def reset(self, kwargs=None):
+        observations, infos = self.envs.reset(kwargs=kwargs)
+        return {"text": observations, "text_base": observations, "image": None, "anchor": observations}, infos
+
+    def step(self, text_actions):
+        actions, valids = self.projection_f(text_actions)
+        observations, rewards, dones, infos = self.envs.step(actions)
+        for i, info in enumerate(infos):
+            info["is_action_valid"] = to_numpy(valids[i])
+        observations = [obs if obs else "Episode finished. Call Finish only if another step is requested." for obs in observations]
+        return {"text": observations, "text_base": observations, "image": None, "anchor": observations}, to_numpy(rewards), to_numpy(dones), infos
+
+    def _process_batch(self, batch_idx, total_batch_list, total_infos, success):
+        for i in reversed(range(len(total_batch_list[batch_idx]))):
+            if total_batch_list[batch_idx][i]["active_masks"]:
+                won = float(total_infos[batch_idx][i].get("won", False))
+                success["success_rate"].append(won)
+                success["toolbench_success_rate"].append(won)
+                return
+
+
 class SciWorldEnvironmentManager(EnvironmentManagerBase):
     def __init__(self, envs, projection_f, config):
         self.memory = SimpleMemory()
@@ -1014,6 +1036,14 @@ def make_envs(config):
         projection_f = partial(search_projection)
         envs = SearchEnvironmentManager(_envs, projection_f, config)
         val_envs = SearchEnvironmentManager(_val_envs, projection_f, config)
+        return envs, val_envs
+    elif "toolbench" in config.env.env_name.lower():
+        from agent_system.environments.env_package.toolbench import build_toolbench_envs, toolbench_projection
+
+        _envs = build_toolbench_envs(config.env.seed, config.data.train_batch_size, group_n, True, config.env)
+        _val_envs = build_toolbench_envs(config.env.seed + 1000, config.data.val_batch_size, 1, False, config.env)
+        envs = ToolBenchEnvironmentManager(_envs, toolbench_projection, config)
+        val_envs = ToolBenchEnvironmentManager(_val_envs, toolbench_projection, config)
         return envs, val_envs
     elif "gym_cards" in config.env.env_name.lower():
         from agent_system.environments.env_package.gym_cards import build_gymcards_envs, gym_projection
