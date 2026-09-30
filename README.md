@@ -176,6 +176,43 @@ conda activate retriever
 bash examples/search/retriever/retrieval_launch.sh > retrieval_server.log
 ```
 
+#### 4. ToolBench
+
+ToolBench GRPO uses ToolBench trajectories together with the StableToolBench tool
+definitions and cached tool responses. These large data assets are not tracked in
+this repository. Download them from [ToolBench](https://github.com/OpenBMB/ToolBench)
+and [StableToolBench](https://github.com/THUDM/StableToolBench), then place them at
+the paths expected by the preprocessing script:
+
+```
+data/
+|- ToolBench/toolllama_G123_dfs_train.json
+`- StableToolBench/server/
+   |- tools/
+   `- tool_response_cache/
+```
+
+Install the StableToolBench server dependencies if you want to serve responses for
+actions that are not present in the local cache:
+
+```bash
+pip install -r data/StableToolBench/server/requirements.txt
+```
+
+The training environment first uses responses included in the trajectory, then the
+local `tool_response_cache`, and finally the HTTP service configured by
+`STABLETOOLBENCH_SERVICE_URL`. To start the reference virtual service, configure
+`data/StableToolBench/server/config.yml` and run:
+
+```bash
+cd data/StableToolBench/server
+python main.py
+cd ../../../
+```
+
+Set `STABLETOOLBENCH_SERVICE_URL` to the server's `/virtual` endpoint when its port
+differs from the training script default (`http://127.0.0.1:12001/virtual`).
+
 ## Training
 
 All OPID scripts live under `examples/opid_trainer/` and assume the repo root as the working directory.
@@ -192,6 +229,44 @@ Additional scripts are provided for Qwen3:
 bash examples/opid_trainer/run_alfworld_opid_guide_qwen3.sh
 bash examples/opid_trainer/run_webshop_opid_guide_qwen3.sh
 bash examples/opid_trainer/run_search_opid_guide_qwen3.sh
+```
+
+### ToolBench GRPO
+
+The Qwen3 ToolBench script preprocesses the source data and launches multi-turn
+GRPO in one command:
+
+```bash
+export MODEL_PATH=$HOME/model/Qwen3-1.7B
+export PYTHON_BIN=$HOME/miniconda3/envs/opid/bin/python
+export CUDA_VISIBLE_DEVICES=0
+
+bash examples/grpo_trainer/run_toolbench_qwen3.sh
+```
+
+By default, preprocessing writes 2,048 training examples and 128 validation
+examples to `data/toolbench_processed/`, and checkpoints are written to
+`$HOME/model/ckpt/grpo_qwen3_1.7b_toolbench_2048`. Override paths and sizes with
+environment variables:
+
+```bash
+TRAIN_SIZE=2048 \
+VAL_SIZE=128 \
+DATA_DIR=$PWD/data/toolbench_processed \
+OUTPUT_DIR=$HOME/model/ckpt/toolbench-grpo \
+STABLETOOLBENCH_SERVICE_URL=http://127.0.0.1:12001/virtual \
+bash examples/grpo_trainer/run_toolbench_qwen3.sh
+```
+
+To create the Parquet files separately, run:
+
+```bash
+python -m examples.data_preprocess.preprocess_toolbench \
+  --source data/ToolBench/toolllama_G123_dfs_train.json \
+  --tool-root data/StableToolBench/server/tools \
+  --output-dir data/toolbench_processed \
+  --train-size 2048 \
+  --val-size 128
 ```
 
 Useful OPID parameters:
