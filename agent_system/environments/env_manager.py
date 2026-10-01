@@ -816,23 +816,46 @@ class AppWorldEnvironmentManager(EnvironmentManagerBase):
 class ToolBenchEnvironmentManager(EnvironmentManagerBase):
     def reset(self, kwargs=None):
         observations, infos = self.envs.reset(kwargs=kwargs)
-        return {"text": observations, "text_base": observations, "image": None, "anchor": observations}, infos
+        self._initial_tasks = list(observations)
+        self._histories = [[] for _ in observations]
+        self._finished = [False for _ in observations]
+        return self._observations(observations), infos
+
+    def _observations(self, observations):
+        from agent_system.environments.env_package.toolbench.context import format_context
+
+        contexts = [
+            {"initial": initial, "history": list(history)}
+            for initial, history in zip(self._initial_tasks, self._histories)
+        ]
+        return {
+            "text": [format_context(item["initial"], item["history"]) for item in contexts],
+            "text_base": list(self._initial_tasks), "image": None, "anchor": observations,
+            "toolbench_context": contexts,
+        }
 
     def step(self, text_actions):
         actions, valids = self.projection_f(text_actions)
         observations, rewards, dones, infos = self.envs.step(actions)
         for i, info in enumerate(infos):
-            info["is_action_valid"] = to_numpy(valids[i])
-        observations = [obs if obs else "Episode finished. Call Finish only if another step is requested." for obs in observations]
-        return {"text": observations, "text_base": observations, "image": None, "anchor": observations}, to_numpy(rewards), to_numpy(dones), infos
+            info["is_action_valid"] = to_numpy(info.get("is_action_valid", valids[i]))
+            if not self._finished[i]:
+                self._histories[i].append({"action": actions[i], "observation": observations[i]})
+            self._finished[i] = self._finished[i] or bool(dones[i])
+        return self._observations(observations), to_numpy(rewards), to_numpy(dones), infos
 
-    def _process_batch(self, batch_idx, total_batch_list, total_infos, success):
-        for i in reversed(range(len(total_batch_list[batch_idx]))):
-            if total_batch_list[batch_idx][i]["active_masks"]:
-                won = float(total_infos[batch_idx][i].get("won", False))
-                success["success_rate"].append(won)
-                success["toolbench_success_rate"].append(won)
-                return
+    def get_evaluation_records(self):
+        return self.envs.get_evaluation_records()
+
+    def success_evaluator(self, **kwargs):
+        records = self.get_evaluation_records()
+        statuses = [record["evaluation"]["status"] for record in records]
+        return {
+            "toolbench_judge_scored_fraction": np.asarray([status in ("success", "failure") for status in statuses], dtype=float),
+            "toolbench_judge_success_fraction": np.asarray([status == "success" for status in statuses], dtype=float),
+            "toolbench_judge_error_fraction": np.asarray([status == "error" for status in statuses], dtype=float),
+            "toolbench_answer_submission_fraction": np.asarray([record["answer_submitted"] for record in records], dtype=float),
+        }
 
 
 class SciWorldEnvironmentManager(EnvironmentManagerBase):
@@ -1040,6 +1063,8 @@ def make_envs(config):
     elif "toolbench" in config.env.env_name.lower():
         from agent_system.environments.env_package.toolbench import build_toolbench_envs, toolbench_projection
 
+        if int(config.actor_rollout_ref.rollout.val_kwargs.n) != 1:
+            raise ValueError("StableToolBench validation requires val_kwargs.n=1 so each task has one judged trajectory.")
         _envs = build_toolbench_envs(config.env.seed, config.data.train_batch_size, group_n, True, config.env)
         _val_envs = build_toolbench_envs(config.env.seed + 1000, config.data.val_batch_size, 1, False, config.env)
         envs = ToolBenchEnvironmentManager(_envs, toolbench_projection, config)

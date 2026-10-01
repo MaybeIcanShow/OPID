@@ -199,6 +199,16 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
         #     batch.non_tensor_batch["tool_callings"][unique_idx].min().item(),
         **({f"episode/{k}": v[0].item() for k, v in batch.non_tensor_batch.items() if "success_rate" in k}),
     }
+    if "toolbench_judge_scored_fraction" in batch.non_tensor_batch:
+        coverage = float(batch.non_tensor_batch["toolbench_judge_scored_fraction"][0])
+        success_fraction = float(batch.non_tensor_batch["toolbench_judge_success_fraction"][0])
+        metrics["episode/toolbench_judge_coverage"] = coverage
+        metrics["episode/toolbench_judge_error_fraction"] = float(batch.non_tensor_batch["toolbench_judge_error_fraction"][0])
+        metrics["episode/toolbench_answer_submission_rate"] = float(batch.non_tensor_batch["toolbench_answer_submission_fraction"][0])
+        if coverage == 1.0:
+            metrics["episode/toolbench_judge_success_rate"] = success_fraction
+        elif coverage > 0:
+            metrics["episode/toolbench_judge_success_rate_scored_subset"] = success_fraction / coverage
     return metrics
 
 

@@ -1415,6 +1415,8 @@ class RayPPOTrainer:
         tool_calling_list = []
         traj_uid_list = []
         success_rate_dict = {}
+        toolbench_evaluations = []
+        episode_reward_lst = []
 
         # Lists to collect samples for the table
         sample_inputs = []
@@ -1476,6 +1478,8 @@ class RayPPOTrainer:
                                                     is_train=False,
                                                     )
             print('validation generation end')
+            if hasattr(self.val_envs, "get_evaluation_records"):
+                toolbench_evaluations.extend(self.val_envs.get_evaluation_records())
             del test_batch
             test_batch = test_output_gen_batch
             # Store generated outputs
@@ -1495,6 +1499,8 @@ class RayPPOTrainer:
             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
             tool_calling_list.append(test_output_gen_batch.non_tensor_batch['tool_callings'])
             traj_uid_list.append(test_output_gen_batch.non_tensor_batch['traj_uid'])
+            if "episode_rewards" in test_output_gen_batch.non_tensor_batch:
+                episode_reward_lst.append(test_output_gen_batch.non_tensor_batch["episode_rewards"])
             # success rate
             for k in test_batch.non_tensor_batch.keys():
                 if 'success_rate' in k:
@@ -1549,6 +1555,26 @@ class RayPPOTrainer:
         subtask_success_rate_mean = compute_subtask_success_rate_mean(success_rate)
         if subtask_success_rate_mean is not None:
             metric_dict['val/subtask_success_rate_mean'] = subtask_success_rate_mean
+
+        if toolbench_evaluations:
+            from agent_system.environments.env_package.toolbench.metrics import summarize_evaluations
+
+            metric_dict.update({
+                f"val/stabletoolbench/{key}": value
+                for key, value in summarize_evaluations(toolbench_evaluations).items()
+            })
+            episode_rewards = np.concatenate(episode_reward_lst)
+            for source in np.unique(unique_data_sources):
+                indices = unique_idx[unique_data_sources == source]
+                metric_dict[f"val/{source}/episode_reward_mean"] = float(episode_rewards[indices].mean())
+            dump_dir = self.config.trainer.get("validation_data_dir") or os.path.join(
+                self.config.trainer.default_local_dir, "validation",
+            )
+            os.makedirs(dump_dir, exist_ok=True)
+            path = os.path.join(dump_dir, f"{self.global_steps}.jsonl")
+            with open(path, "w") as handle:
+                for record in toolbench_evaluations:
+                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
         return metric_dict
 
@@ -2696,6 +2722,10 @@ class RayPPOTrainer:
                                     "step_id",
                                     "uid",
                                     "traj_uid",
+                                    "response_source",
+                                    "response_error_code",
+                                    "evaluation_status",
+                                    "termination_reason",
                                 )
                                 if key in batch.non_tensor_batch
                             }

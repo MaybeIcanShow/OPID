@@ -349,6 +349,27 @@ env:
     simplifications_preset: easy
     jar_path: null
   toolbench:
-    cache_root: data/StableToolBench/server/tool_response_cache
-    service_url: "http://127.0.0.1:12001/virtual"
-    request_timeout: 8
+    backend: mirrorapi_cache
+    cache_enabled: True
+    cache_root: data/StableToolBench/tool_response_cache
+    tools_root: data/StableToolBench/tools
+    mirrorapi_cache_url: "http://10.8.176.56:8001/v1"
+    mirrorapi_cache_model: MirrorAPI-Cache
+    mirrorapi_url: "http://10.8.176.56:8000/v1"
+    mirrorapi_model: MirrorAPI
+    request_timeout: 60
+    max_concurrency: 8
+    max_tokens: 2048
+    temperature: 0
+    api_key_env: STABLETOOLBENCH_API_KEY
+    trust_env: False
+    evaluator:
+      enabled: True
+      mode: fac_prompt
+      api_base: "http://10.8.176.56:8000/v1"
+      model: MirrorAPI
+      api_key_env: STABLETOOLBENCH_JUDGE_API_KEY
+      request_timeout: 60
+      max_concurrency: 8
+      max_tokens: 512
+      trust_env: False

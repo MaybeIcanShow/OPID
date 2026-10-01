@@ -153,9 +153,16 @@ class TrajectoryCollector:
         # if '<image>' in obs_content: 
         #     obs_content = obs_content.replace('<image>', '')
 
-        # Build chat structure
+        # Preserve ToolBench task/tool definitions while trimming old history.
         obs_content = ''
-        if obs_text is not None:
+        if obs.get("toolbench_context") is not None:
+            from agent_system.environments.env_package.toolbench.context import fit_context
+            context = obs["toolbench_context"][item]
+            obs_content = fit_context(
+                context["initial"], context["history"], self.tokenizer,
+                self.config.data.max_prompt_length, apply_chat_template_kwargs,
+            )
+        elif obs_text is not None:
             obs_content += obs_text
         else:
             print(f"Warning: No text observation found!")
@@ -480,6 +487,10 @@ class TrajectoryCollector:
             else:
                 batch.non_tensor_batch['is_action_valid'] = np.ones(batch_size, dtype=bool)
 
+            for info_key in ("response_source", "response_error_code", "evaluation_status", "termination_reason"):
+                batch.non_tensor_batch[info_key] = np.asarray(
+                    [info.get(info_key, "") for info in infos], dtype=object,
+                )
             if 'tool_calling' in infos[0]:
                 tool_callings[active_masks] += np.array([info['tool_calling'] for info in infos], dtype=np.float32)[active_masks]
             # Create reward tensor, only assign rewards for active environments
