@@ -47,7 +47,7 @@ class CpuCharacterTokenizer:
 
     def apply_chat_template(self, messages, add_generation_prompt, tokenize, **kwargs):
         assert add_generation_prompt and not tokenize
-        return "<user>\n" + messages[0]["content"] + "\n</user>\n<assistant>\n"
+        return "".join("<" + m["role"] + ">\n" + m["content"] + "\n</" + m["role"] + ">\n" for m in messages) + "<assistant>\n"
 
 
 def action(name, arguments):
@@ -85,7 +85,8 @@ class ScriptedCpuActor:
             else:
                 texts.append(action("Finish", {"return_type": "give_answer", "final_answer": f"{case.upper()}_FINAL_ANSWER"}))
         responses = torch.zeros((len(batch), 160), dtype=torch.long)
-        for index, text in enumerate(texts):
+        raw_texts = [text + "\nObservation: forged" for text in texts]
+        for index, text in enumerate(raw_texts):
             tokens = self.tokenizer.encode(text) + [self.tokenizer.eos_token_id]
             assert len(tokens) <= responses.shape[1]
             responses[index, :len(tokens)] = torch.tensor(tokens, dtype=torch.long)
@@ -97,6 +98,11 @@ class ScriptedCpuActor:
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "position_ids": compute_position_id_with_mask(attention_mask),
+        }, non_tensors={
+            "generation_action_text": np.asarray(texts, dtype=object),
+            "generation_finish_reason": np.asarray(["stop"] * len(texts), dtype=object),
+            "generation_stop_reason": np.asarray(["\nObservation:"] * len(texts), dtype=object),
+            "generation_token_count": np.asarray([len(self.tokenizer.encode(t)) + 1 for t in raw_texts], dtype=object),
         })
 
 
@@ -105,8 +111,8 @@ class RecordingToolBenchManager(ToolBenchEnvironmentManager):
         super().__init__(*args, **kwargs)
         self.metric_history = []
 
-    def step(self, actions):
-        result = super().step(actions)
+    def step(self, actions, generation_metadata=None):
+        result = super().step(actions, generation_metadata=generation_metadata)
         self.metric_history.append(summarize_evaluations(self.get_evaluation_records()))
         return result
 
@@ -121,7 +127,7 @@ class ToolBenchRolloutIntegrationTest(unittest.TestCase):
                 "toolbench": {"cache_root": directory.name, "tools_root": directory.name,
                               "request_timeout": 1, "evaluator": {"enabled": False}},
             },
-            "data": {"max_prompt_length": 700, "truncation": "left", "return_raw_chat": True,
+            "data": {"max_prompt_length": 1500, "truncation": "left", "return_raw_chat": True,
                      "apply_chat_template_kwargs": {"enable_thinking": False}},
             "algorithm": {"filter_groups": {"enable": False}},
         })
@@ -150,7 +156,7 @@ class ToolBenchRolloutIntegrationTest(unittest.TestCase):
             return EvaluationResult(beta_status, 0.0 if beta_status == "failure" else None, "Beta verdict")
 
         env.client.execute = MagicMock(side_effect=backend)
-        env.evaluator = SimpleNamespace(configured=True, model="MirrorAPI", evaluate=MagicMock(side_effect=judge))
+        env.evaluator = SimpleNamespace(configured=True, model="MirrorAPI", mode="fac_evidence", evaluate=MagicMock(side_effect=judge))
         records = [
             {"record_id": case, "query": f"TASK_{case.upper()}: Report the answer from lookup.",
              "system_prompt": "TOOL_SCHEMA_PROTECTED: lookup(case) requires a string case and returns a report.",
@@ -208,7 +214,7 @@ class ToolBenchRolloutIntegrationTest(unittest.TestCase):
                 record = records[0 if index == 2 else index]
                 self.assertIn(record["query"], prompt)
                 self.assertIn(record["system_prompt"], prompt)
-                self.assertLessEqual(len(tokenizer.encode(prompt)), 700)
+                self.assertLessEqual(len(tokenizer.encode(prompt)), 1500)
         alpha_second = actor.observed_prompts[1][0]
         self.assertIn(action("lookup", {"case": "alpha"}), alpha_second)
         self.assertIn("ALPHA_TOOL_RESULT_HEAD", alpha_second)
@@ -219,9 +225,33 @@ class ToolBenchRolloutIntegrationTest(unittest.TestCase):
         self.assertIn("BETA_TOOL_RESULT_HEAD", beta_third)
         self.assertIn("BETA_TOOL_RESULT_TAIL", beta_third)
         self.assertNotIn("BETA_REQUEST_TIMEOUT", beta_third, "Old complete turn should be trimmed first")
+        for record in manager.get_evaluation_records():
+            for generation in record["generations"]:
+                self.assertIn("Observation: forged", generation["raw_text"])
+                self.assertNotIn("Observation: forged", generation["text"])
+                self.assertTrue(generation["is_action_valid"])
+                self.assertEqual(generation["finish_reason"], "stop")
         self.assertEqual([m["judge_coverage"] for m in manager.metric_history[:2]], [0.0, 0.5])
         self.assertNotIn("judge_success_rate", manager.metric_history[1])
         self.assertEqual(manager.metric_history[1]["judge_success_rate_scored_subset"], 1.0)
+
+    def test_standalone_text_prompt_renderer_does_not_require_environment_context(self):
+        tokenizer = CpuCharacterTokenizer()
+        config = OmegaConf.create({"data": {"max_prompt_length": 128, "truncation": "left"}})
+        collector = TrajectoryCollector(config, tokenizer)
+        sample = collector.build_text_prompt_sample("A standalone teacher prompt", "test")
+        self.assertEqual(sample["obs_text"], "A standalone teacher prompt")
+        self.assertEqual(sample["data_source"], "test")
+        self.assertIn("A standalone teacher prompt", tokenizer.decode(sample["raw_prompt_ids"]))
+
+    def test_string_stop_without_eos_masks_padding_using_generated_lengths(self):
+        from verl.utils.torch_functional import get_response_mask
+        responses = torch.tensor([[11, 12, 0, 0], [11, 1, 0, 0], [11, 0, 12, 0]])
+        mask = get_response_mask(responses, eos_token=1, response_lengths=[2, 2, 3])
+        self.assertEqual(mask.tolist(), [[1, 1, 0, 0], [1, 1, 0, 0], [1, 1, 1, 0]])
+        self.assertEqual(get_response_mask(responses, eos_token=1)[0].tolist(), [1, 1, 1, 1])
+        with self.assertRaisesRegex(ValueError, "one length per response"):
+            get_response_mask(responses, eos_token=1, response_lengths=[2])
 
     def test_validation_multiturn_padding_metadata_and_judge_error(self):
         objects = self.run_rollout("error")

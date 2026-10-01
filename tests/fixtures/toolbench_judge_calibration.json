@@ -1,0 +1,194 @@
+[
+  {
+    "split": "development",
+    "query": "Report the delivery status and destination city for package P123.",
+    "answer": "Package P123 was delivered. Its destination city is Memphis.",
+    "expected": "success"
+  },
+  {
+    "split": "development",
+    "query": "Report the delivery status and destination city for package P123.",
+    "answer": "Package P123 was delivered.",
+    "expected": "failure"
+  },
+  {
+    "split": "development",
+    "query": "Give the title, channel name, and view count of one landscape drawing tutorial video.",
+    "answer": "Title: Drawing Hills. Channel: Art Lessons. View count: 1200000.",
+    "expected": "success"
+  },
+  {
+    "split": "development",
+    "query": "Give the title, channel name, and view count of one landscape drawing tutorial video.",
+    "answer": "A landscape tutorial is available on YouTube.",
+    "expected": "failure"
+  },
+  {
+    "split": "development",
+    "query": "List two movies, giving each title and runtime.",
+    "answer": "Movie one: Example A, 90 minutes. Movie two: Example B, 110 minutes.",
+    "expected": "success"
+  },
+  {
+    "split": "development",
+    "query": "List two movies, giving each title and runtime.",
+    "answer": "Example A is a good movie.",
+    "expected": "failure"
+  },
+  {
+    "split": "development",
+    "query": "Tell me the price and stock count for product Widget A.",
+    "answer": "Widget A costs $12.50 and has 24 units in stock.",
+    "expected": "success"
+  },
+  {
+    "split": "development",
+    "query": "Tell me the price and stock count for product Widget A.",
+    "answer": "Widget A costs $12.50.",
+    "expected": "failure"
+  },
+  {
+    "split": "development",
+    "query": "Provide a streaming URL for video VID123 and the name of its creator.",
+    "answer": "The streaming URL is https://example.com/watch/VID123 and its creator is Alice Chen.",
+    "expected": "success"
+  },
+  {
+    "split": "development",
+    "query": "Provide a streaming URL for video VID123 and the name of its creator.",
+    "answer": "I cannot retrieve the video information.",
+    "expected": "failure"
+  },
+  {
+    "split": "development",
+    "query": "Give the date and city of the conference.",
+    "answer": "The conference is on October 15, 2026 in Shanghai.",
+    "expected": "success"
+  },
+  {
+    "split": "development",
+    "query": "Give the date and city of the conference.",
+    "answer": "The conference is in Shanghai.",
+    "expected": "failure"
+  },
+  {
+    "split": "development",
+    "query": "Find the latest status of package CA107308006SI.",
+    "answer": "Package CA107308006SI has been delivered in Noumea.",
+    "expected": "success"
+  },
+  {
+    "split": "development",
+    "query": "Find the latest status of package CA107308006SI.",
+    "answer": "Please provide a package ID.",
+    "expected": "failure"
+  },
+  {
+    "split": "development",
+    "query": "Recommend one flowering houseplant and state its light and watering requirements.",
+    "answer": "A peace lily is a flowering houseplant. It prefers bright indirect light; water when the top inch of soil dries.",
+    "expected": "success"
+  },
+  {
+    "split": "development",
+    "query": "Recommend one flowering houseplant and state its light and watering requirements.",
+    "answer": "I recommend a peace lily.",
+    "expected": "failure"
+  },
+  {
+    "split": "holdout",
+    "query": "For train T88, give its departure time and arrival station.",
+    "answer": "Train T88 departs at 14:20 and arrives at Central Station.",
+    "expected": "success"
+  },
+  {
+    "split": "holdout",
+    "query": "For train T88, give its departure time and arrival station.",
+    "answer": "Train T88 departs at 14:20.",
+    "expected": "failure"
+  },
+  {
+    "split": "holdout",
+    "query": "Compare the battery life and weight of Laptop A and Laptop B.",
+    "answer": "Laptop A: 10 hours, 1.3 kg. Laptop B: 8 hours, 1.1 kg.",
+    "expected": "success"
+  },
+  {
+    "split": "holdout",
+    "query": "Compare the battery life and weight of Laptop A and Laptop B.",
+    "answer": "Laptop A: 10 hours, 1.3 kg. Laptop B is lightweight.",
+    "expected": "failure"
+  },
+  {
+    "split": "holdout",
+    "query": "List three museums, each with its city and admission price.",
+    "answer": "North Museum: Leeds, £10. River Museum: York, £12. Dock Museum: Hull, free.",
+    "expected": "success"
+  },
+  {
+    "split": "holdout",
+    "query": "List three museums, each with its city and admission price.",
+    "answer": "North Museum: Leeds, £10. River Museum: York, £12.",
+    "expected": "failure"
+  },
+  {
+    "split": "holdout",
+    "query": "Give the opening hours and street address of the library.",
+    "answer": "The library opens 09:00–18:00 at 42 King Street.",
+    "expected": "success"
+  },
+  {
+    "split": "holdout",
+    "query": "Give the opening hours and street address of the library.",
+    "answer": "Its address is 42 King Street.",
+    "expected": "failure"
+  },
+  {
+    "split": "holdout",
+    "query": "Name the author and publication year of Book Z.",
+    "answer": "Book Z was written by Mira Lane and published in 2021.",
+    "expected": "success"
+  },
+  {
+    "split": "holdout",
+    "query": "Name the author and publication year of Book Z.",
+    "answer": "I am unable to look up the author or year.",
+    "expected": "failure"
+  },
+  {
+    "split": "holdout",
+    "query": "Provide a download link and file size for report R7.",
+    "answer": "Download R7 at https://example.org/reports/r7.pdf. File size: 2.4 MB.",
+    "expected": "success"
+  },
+  {
+    "split": "holdout",
+    "query": "Provide a download link and file size for report R7.",
+    "answer": "The report file size is 2.4 MB. Please find the download link yourself.",
+    "expected": "failure"
+  },
+  {
+    "split": "holdout",
+    "query": "Give the current temperature and humidity in City C.",
+    "answer": "City C: 23°C, 64% humidity.",
+    "expected": "success"
+  },
+  {
+    "split": "holdout",
+    "query": "Give the current temperature and humidity in City C.",
+    "answer": "Please tell me the current temperature and humidity.",
+    "expected": "failure"
+  },
+  {
+    "split": "holdout",
+    "query": "Recommend a walking route and estimate its distance and duration.",
+    "answer": "Take River Road from the station to the park: 3 km, about 40 minutes on foot.",
+    "expected": "success"
+  },
+  {
+    "split": "holdout",
+    "query": "Recommend a walking route and estimate its distance and duration.",
+    "answer": "Walk from the station to the park along River Road.",
+    "expected": "failure"
+  }
+]

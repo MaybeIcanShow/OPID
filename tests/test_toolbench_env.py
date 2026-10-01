@@ -48,7 +48,7 @@ class ToolBenchEnvTest(unittest.TestCase):
                 "function_map": {"forecast": dict(MAPPING)}, "record_id": "test-1", **changes}
 
     def set_judge(self, env, result):
-        env.evaluator = SimpleNamespace(configured=True, model="MirrorAPI", evaluate=MagicMock(return_value=result))
+        env.evaluator = SimpleNamespace(configured=True, model="MirrorAPI", mode="fac_evidence", evaluate=MagicMock(return_value=result))
         return env.evaluator.evaluate
 
     def test_parquet_null_tool_mapping_does_not_break_other_trajectories(self):

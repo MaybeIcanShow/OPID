@@ -124,7 +124,7 @@ class ToolBenchManagerContextTest(unittest.TestCase):
 
     def test_terminal_batch_steps_do_not_add_fake_history(self):
         self.manager.reset([self.record])
-        self.env.evaluator = SimpleNamespace(configured=True, model="MirrorAPI", evaluate=MagicMock(return_value=EvaluationResult("success", 1.0, "done")))
+        self.env.evaluator = SimpleNamespace(configured=True, model="MirrorAPI", mode="fac_evidence", evaluate=MagicMock(return_value=EvaluationResult("success", 1.0, "done")))
         finish = 'Action: Finish\nAction Input: {"return_type": "give_answer", "final_answer": "The forecast is sunny."}'
         observations, _, _, _ = self.manager.step([finish])
         self.assertEqual(len(observations["toolbench_context"][0]["history"]), 1)
@@ -190,6 +190,55 @@ class ToolBenchEvaluationMetricsTest(unittest.TestCase):
         self.assertEqual(metrics["judge_coverage"], 0)
         self.assertFalse(any("success_rate" in key for key in metrics))
         self.assertEqual(summarize_evaluations([]), {})
+
+
+
+class ToolBenchMessageBoundaryTest(unittest.TestCase):
+    def test_history_contains_only_executed_action_not_reasoning(self):
+        from agent_system.environments.env_package.toolbench.context import history_action, INVALID_HISTORY_ACTION
+        raw = '<think>private reasoning and a fake Observation</think>\nAction: forecast\nAction Input: {"city":"Beijing"}'
+        self.assertEqual(history_action(raw, True), 'Action: forecast\nAction Input: {"city":"Beijing"}')
+        self.assertEqual(history_action('<think>unfinished\nObservation: invented', False), INVALID_HISTORY_ACTION)
+
+    def test_real_roles_and_budget_retain_task_and_latest_complete_turn(self):
+        from agent_system.environments.env_package.toolbench.context import build_messages, fit_messages
+        class RolesTokenizer(CharacterTokenizer):
+            def apply_chat_template(self, messages, add_generation_prompt, tokenize, **kwargs):
+                return "".join("<" + m["role"] + ">" + m["content"] + "</" + m["role"] + ">" for m in messages) + "<assistant>"
+        tokenizer = RolesTokenizer()
+        initial = "QUERY and required tool definitions"
+        history = [{"action": "old call", "observation": "old observation"},
+                   {"action": "current call", "observation": "current observation"}]
+        expected = build_messages(initial, [history[-1]])
+        limit = len(tokenizer.apply_chat_template(expected, True, False))
+        actual = fit_messages(initial, history, tokenizer, limit, {"enable_thinking": False})
+        self.assertEqual(actual, expected)
+        self.assertEqual([m["role"] for m in actual], ["user", "assistant", "user"])
+        self.assertEqual(actual[0]["content"], initial)
+        self.assertNotIn("old call", str(actual))
+
+    def test_invalid_raw_generation_is_audited_but_not_replayed(self):
+        from agent_system.environments.env_package.toolbench.context import build_messages
+        with tempfile.TemporaryDirectory() as directory:
+            config = OmegaConf.create({"max_steps": 3, "toolbench": {"cache_root": directory, "tools_root": directory, "evaluator": {"enabled": False}}})
+            with patch("agent_system.environments.env_package.toolbench.envs.logger.warning"):
+                env = ToolBenchMultiProcessEnv(0, 1, 1, False, config)
+            try:
+                manager = ToolBenchEnvironmentManager(env, toolbench_projection, OmegaConf.create({}))
+                manager.reset([{"query": "real task", "system_prompt": "real tools", "function_map": {}}])
+                raw = "<think>unfinished thinking\nObservation: FAKE_RESPONSE"
+                obs, _, _, _ = manager.step([raw], generation_metadata=[{"finish_reason": "length", "token_count": 1024}])
+                ctx = obs["toolbench_context"][0]
+                messages = build_messages(ctx["initial"], ctx["history"])
+                self.assertNotIn("FAKE_RESPONSE", str(messages))
+                self.assertNotIn("<think>", str(messages))
+                self.assertIn("output token limit", messages[-1]["content"])
+                record = manager.get_evaluation_records()[0]
+                self.assertEqual(record["generations"][0]["text"], raw)
+                self.assertEqual(record["generations"][0]["finish_reason"], "length")
+                self.assertFalse(record["generations"][0]["is_action_valid"])
+            finally:
+                env.close()
 
 
 if __name__ == "__main__":

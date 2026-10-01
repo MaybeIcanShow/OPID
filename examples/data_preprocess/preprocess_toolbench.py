@@ -61,7 +61,8 @@ def record_query(record: dict[str, Any]) -> str:
 def initial_observation(system_prompt: str, query: str) -> str:
     # Keep identical to ToolBenchMultiProcessEnv._initial_observation so prompt
     # length filtering measures the real initial context, including all tools.
-    return f"{system_prompt.strip()}\n\nUser query:\n{query.strip()}\nBegin!" if system_prompt.strip() else f"Task: {query.strip()}\nBegin!"
+    from agent_system.environments.env_package.toolbench.protocol import initial_observation as build_initial
+    return build_initial(system_prompt, query)
 
 
 def _identity(category: str, tool_name: str, api_name: str) -> str:
@@ -195,7 +196,7 @@ def convert_eval_record(record: dict[str, Any], tool_index: dict[str, dict[str, 
     })
     system_prompt = (
         "Use the available tools to complete the user's task. At each step output:\n"
-        "Thought: a short explanation\nAction: one function name\nAction Input: a JSON object\n"
+        "Action: one function name\nAction Input: a JSON object\n"
         "Wait for the tool result before choosing the next action. Always end with Finish. "
         "Use return_type give_answer and a complete final_answer only when the task is completed; "
         "otherwise use give_up_and_restart.\n"
@@ -305,7 +306,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", default="data/ToolBench/toolllama_G123_dfs_train.json")
     parser.add_argument("--tool-root", default="data/StableToolBench/tools")
-    parser.add_argument("--output-dir", default="data/toolbench_stable_processed")
+    parser.add_argument("--output-dir", default="data/toolbench_stable_processed_v2")
     parser.add_argument("--train-size", type=int, default=2048)
     parser.add_argument("--val-size", type=int, default=128)
     parser.add_argument("--eval-query-dir", default="data/StableToolBench/solvable_queries")
@@ -314,6 +315,7 @@ def main() -> None:
     parser.add_argument("--download-eval-queries", action="store_true", help="download missing official query files at the pinned revision")
     parser.add_argument("--tokenizer", help="local tokenizer path for filtering full initial prompts before split sampling")
     parser.add_argument("--max-initial-prompt-tokens", type=int, default=3584)
+    parser.add_argument("--enable-thinking", choices=("true", "false"), default="false")
     args = parser.parse_args()
     if args.train_size < 1 or args.val_size < 1:
         parser.error("train-size and val-size must both be positive")
@@ -332,7 +334,7 @@ def main() -> None:
         @lru_cache(maxsize=8192)
         def prompt_tokens(system: str, query: str) -> int:
             messages = [{"role": "user", "content": initial_observation(system, query)}]
-            return len(tokenizer.apply_chat_template(messages, add_generation_prompt=True, enable_thinking=True))
+            return len(tokenizer.apply_chat_template(messages, add_generation_prompt=True, enable_thinking=args.enable_thinking == "true"))
 
     eligible_groups, eval_rows_by_id, eval_length_stats = {}, {}, {}
     for group in selected_groups:
@@ -394,7 +396,7 @@ def main() -> None:
         "initial_prompt_filter": {
             "enabled": bool(args.tokenizer), "tokenizer": args.tokenizer,
             "max_tokens": args.max_initial_prompt_tokens if args.tokenizer else None,
-            "chat_template_kwargs": {"add_generation_prompt": True, "enable_thinking": True},
+            "chat_template_kwargs": {"add_generation_prompt": True, "enable_thinking": args.enable_thinking == "true"},
             "validation_group_statistics": eval_length_stats,
             "max_selected_train_tokens": max(row["extra_info"]["initial_prompt_tokens"] for row in train_rows) if args.tokenizer else None,
             "max_selected_val_tokens": max(row["extra_info"]["initial_prompt_tokens"] for row in val_rows) if args.tokenizer else None,

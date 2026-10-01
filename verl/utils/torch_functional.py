@@ -187,7 +187,7 @@ def masked_whiten(values, mask, shift_mean=True):
     return whitened
 
 
-def get_response_mask(response_id: torch.Tensor, eos_token: Union[int, List[int]] = 2, dtype=torch.int64):
+def get_response_mask(response_id: torch.Tensor, eos_token: Union[int, List[int]] = 2, dtype=torch.int64, response_lengths=None):
     """
     end of sentence token can be int or list: 1 or [1, 2]
     e.g.
@@ -207,7 +207,15 @@ def get_response_mask(response_id: torch.Tensor, eos_token: Union[int, List[int]
                             [1, 1, 1, 1, 1, 0, 0]])
     """
     eos_mask = torch.isin(response_id, torch.tensor(eos_token, device=response_id.device)).int()
-    return (eos_mask.cumsum(dim=1) - eos_mask).eq(0).to(dtype)
+    mask = (eos_mask.cumsum(dim=1) - eos_mask).eq(0)
+    if response_lengths is not None:
+        # String-stop completions need not contain EOS. Mask padding using the
+        # actual generated lengths rather than treating every padded token as output.
+        lengths = torch.as_tensor(response_lengths, device=response_id.device)
+        if lengths.shape != (response_id.shape[0],):
+            raise ValueError("response_lengths must have one length per response")
+        mask &= torch.arange(response_id.shape[1], device=response_id.device)[None, :] < lengths[:, None]
+    return mask.to(dtype)
 
 
 def compute_grad_norm(model: nn.Module):

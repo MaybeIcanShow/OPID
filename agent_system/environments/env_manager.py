@@ -834,13 +834,14 @@ class ToolBenchEnvironmentManager(EnvironmentManagerBase):
             "toolbench_context": contexts,
         }
 
-    def step(self, text_actions):
+    def step(self, text_actions, generation_metadata=None):
+        from agent_system.environments.env_package.toolbench.context import history_action
         actions, valids = self.projection_f(text_actions)
-        observations, rewards, dones, infos = self.envs.step(actions)
+        observations, rewards, dones, infos = self.envs.step(actions, generation_metadata=generation_metadata)
         for i, info in enumerate(infos):
             info["is_action_valid"] = to_numpy(info.get("is_action_valid", valids[i]))
             if not self._finished[i]:
-                self._histories[i].append({"action": actions[i], "observation": observations[i]})
+                self._histories[i].append({"action": history_action(actions[i], bool(info["is_action_valid"])), "observation": observations[i]})
             self._finished[i] = self._finished[i] or bool(dones[i])
         return self._observations(observations), to_numpy(rewards), to_numpy(dones), infos
 

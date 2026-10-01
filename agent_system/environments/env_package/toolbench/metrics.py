@@ -21,6 +21,16 @@ def summarize_evaluations(records):
         result["judge_success_rate"] = outcomes["success"] / total
     elif scored:
         result["judge_success_rate_scored_subset"] = outcomes["success"] / scored
+    generations = [item for record in records for item in record.get("generations", [])]
+    if generations:
+        result["action_valid_rate"] = sum(bool(g.get("is_action_valid")) for g in generations) / len(generations)
+        observed = [g for g in generations if g.get("finish_reason")]
+        result["generation_status_coverage"] = len(observed) / len(generations)
+        if observed:
+            length_stops = sum(g["finish_reason"] == "length" for g in observed)
+            result["generation_length_stop_count"] = length_stops
+            result["generation_length_stop_fraction"] = length_stops / len(observed)
+    result["judge_format_retry_tasks"] = sum(len(r["evaluation"].get("attempts", [])) > 1 for r in records)
     sources = Counter()
     for record in records:
         sources.update(record.get("response_sources", {}))

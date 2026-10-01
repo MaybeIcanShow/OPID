@@ -9,7 +9,7 @@ ulimit -u 65536
 
 PYTHON_BIN="${PYTHON_BIN:-$HOME/miniconda3/envs/opid/bin/python}"
 MODEL_PATH="${MODEL_PATH:-$HOME/model/Qwen3-1.7B}"
-DATA_DIR="${DATA_DIR:-$PWD/data/toolbench_stable_processed}"
+DATA_DIR="${DATA_DIR:-$PWD/data/toolbench_stable_processed_v2}"
 SOURCE_DATA="${SOURCE_DATA:-$PWD/data/ToolBench/toolllama_G123_dfs_train.json}"
 TOOL_ROOT="${TOOL_ROOT:-$PWD/data/StableToolBench/tools}"
 CACHE_ROOT="${CACHE_ROOT:-$PWD/data/StableToolBench/tool_response_cache}"
@@ -20,7 +20,7 @@ TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-16}"
 GROUP_SIZE="${GROUP_SIZE:-8}"
 PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-16}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
-ENABLE_THINKING="${ENABLE_THINKING:-True}"
+ENABLE_THINKING="${ENABLE_THINKING:-False}"
 SAVE_FREQ="${SAVE_FREQ:-1}"
 TEST_FREQ="${TEST_FREQ:-1}"
 ENABLE_TENSORBOARD="${ENABLE_TENSORBOARD:-True}"
@@ -36,6 +36,7 @@ MIRRORAPI_URL="${MIRRORAPI_URL:-http://10.8.176.56:8000/v1}"
 MIRRORAPI_MODEL="${MIRRORAPI_MODEL:-MirrorAPI}"
 TOOLBENCH_JUDGE_URL="${TOOLBENCH_JUDGE_URL:-$MIRRORAPI_URL}"
 TOOLBENCH_JUDGE_MODEL="${TOOLBENCH_JUDGE_MODEL:-$MIRRORAPI_MODEL}"
+TOOLBENCH_JUDGE_MODE="${TOOLBENCH_JUDGE_MODE:-fac_evidence}"
 
 
 if [[ "${ENABLE_TENSORBOARD,,}" == "true" ]]; then
@@ -49,7 +50,7 @@ export TENSORBOARD_DIR
   --source "$SOURCE_DATA" --tool-root "$TOOL_ROOT" \
   --train-size "$TRAIN_SIZE" --val-size "$VAL_SIZE" --output-dir "$DATA_DIR" \
   --eval-query-dir "$EVAL_QUERY_DIR" \
-  --tokenizer "$MODEL_PATH" --max-initial-prompt-tokens 3584
+  --tokenizer "$MODEL_PATH" --max-initial-prompt-tokens 3584 --enable-thinking "${ENABLE_THINKING,,}"
 
 "$PYTHON_BIN" -m verl.trainer.main_ppo \
   algorithm.adv_estimator=grpo \
@@ -78,6 +79,10 @@ export TENSORBOARD_DIR
   actor_rollout_ref.actor.fsdp_config.optimizer_offload="$ACTOR_OPTIMIZER_OFFLOAD" \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.n=1 \
+  actor_rollout_ref.rollout.temperature=0.7 \
+  actor_rollout_ref.rollout.top_p=0.8 \
+  actor_rollout_ref.rollout.top_k=20 \
+  +actor_rollout_ref.rollout.toolbench_single_action=True \
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
   actor_rollout_ref.rollout.gpu_memory_utilization="$VLLM_GPU_MEMORY_UTILIZATION" \
   actor_rollout_ref.rollout.max_model_len=8192 \
@@ -87,8 +92,9 @@ export TENSORBOARD_DIR
   actor_rollout_ref.rollout.enable_chunked_prefill=False \
   actor_rollout_ref.rollout.enforce_eager=True \
   actor_rollout_ref.rollout.free_cache_engine=False \
-  actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
-  actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
+  actor_rollout_ref.rollout.val_kwargs.temperature=0.7 \
+  actor_rollout_ref.rollout.val_kwargs.top_p=0.8 \
+  actor_rollout_ref.rollout.val_kwargs.top_k=20 \
   actor_rollout_ref.rollout.val_kwargs.do_sample=True \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
   actor_rollout_ref.ref.fsdp_config.param_offload=True \
@@ -110,7 +116,8 @@ export TENSORBOARD_DIR
   env.toolbench.max_concurrency=8 \
   env.toolbench.evaluator.api_base="$TOOLBENCH_JUDGE_URL" \
   env.toolbench.evaluator.model="$TOOLBENCH_JUDGE_MODEL" \
-  env.toolbench.evaluator.mode=fac_prompt \
+  env.toolbench.evaluator.mode="$TOOLBENCH_JUDGE_MODE" \
+  env.toolbench.evaluator.max_tokens=1024 \
   trainer.critic_warmup=0 \
   trainer.logger="$LOGGER" \
   trainer.project_name=agentic_toolbench \

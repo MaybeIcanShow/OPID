@@ -9,6 +9,9 @@ import requests
 
 from agent_system.environments.env_package.toolbench.evaluation import (
     FAC_PROMPT,
+    FAC_EVIDENCE_PROMPT,
+    FAC_EVIDENCE_SYSTEM,
+    parse_evidence_response,
     StableToolBenchEvaluator,
 )
 
@@ -163,6 +166,66 @@ class StableToolBenchEvaluationTest(unittest.TestCase):
         )
         self.assertEqual(result.score, 1.0)
         self.assertEqual(session.post.call_args.kwargs["json"]["model"], "MirrorAPI")
+
+
+    def test_malformed_completion_retries_once_and_retains_both_verdicts(self):
+        malformed = MagicMock()
+        malformed.json.return_value = {"choices": [{"finish_reason": "stop", "message": {"content": "Unsolved\nIncomplete\nSolved"}}]}
+        corrected = MagicMock()
+        corrected.json.return_value = {"choices": [{"finish_reason": "stop", "message": {"content": "Answer Status: Unsolved\nReason: Missing required information."}}]}
+        session = MagicMock()
+        session.post.side_effect = [malformed, corrected]
+        context = MagicMock()
+        context.__enter__.return_value = session
+        with patch("agent_system.environments.env_package.toolbench.evaluation.requests.Session", return_value=context):
+            result = StableToolBenchEvaluator(self.config).evaluate("a multi-part query", "partial answer")
+        self.assertEqual(result.status, "failure")
+        self.assertEqual(len(result.attempts), 2)
+        self.assertEqual(result.attempts[0]["status"], "error")
+        self.assertIn("Unsolved\nIncomplete\nSolved", result.attempts[0]["raw_response"])
+        self.assertEqual(session.post.call_count, 2)
+        self.assertIn("Do not append another verdict", session.post.call_args.kwargs["json"]["messages"][0]["content"])
+
+    def test_evidence_protocol_checks_reason_before_terminal_verdict(self):
+        for label, expected in (("Solved", 1.0), ("Unsolved", 0.0)):
+            for prefix in ("Answer Status", "Final Answer Status"):
+                result = parse_evidence_response(f"Reason: Both requested fields were checked.\n{prefix}: {label}")
+                self.assertEqual(result.score, expected)
+        result, session = self.invoke(
+            "Reason: The answer asks for information instead of providing it.\nAnswer Status: Unsolved",
+            config={**self.config, "mode": "fac_evidence", "max_tokens": 1024},
+        )
+        self.assertEqual(result.status, "failure")
+        payload = session.post.call_args.kwargs["json"]
+        self.assertEqual(payload["seed"], 42)
+        self.assertEqual(payload["max_tokens"], 1024)
+        self.assertEqual(payload["messages"], [
+            {"role": "system", "content": FAC_EVIDENCE_SYSTEM},
+            {"role": "user", "content": FAC_EVIDENCE_PROMPT.format(
+                query="What is the weather in Beijing?", answer="I am sorry, please provide more information.")},
+        ])
+
+    def test_evidence_protocol_rejects_missing_ambiguous_or_nonterminal_verdict(self):
+        for content in (
+            "Answer Status: Solved", "Reason: Probably solved.", None,
+            "Solved\nReason: A required field is absent.\nAnswer Status: Unsolved",
+            "Reason: Partial.\nAnswer Status: Unsolved\nFinal Answer Status: Solved",
+            "Reason: Complete.\nAnswer Status: Solved\nMore text",
+        ):
+            with self.subTest(content=content):
+                self.assertIsNone(parse_evidence_response(content).score)
+
+    def test_evidence_retry_preserves_system_and_reason_first_instructions(self):
+        result, session = self.invoke(
+            "The answer is complete but no terminal verdict was emitted.",
+            config={**self.config, "mode": "fac_evidence"},
+        )
+        self.assertEqual(result.status, "error")
+        self.assertEqual(session.post.call_count, 2)
+        self.assertEqual(len(result.attempts), 2)
+        messages = session.post.call_args.kwargs["json"]["messages"]
+        self.assertEqual(messages[0]["content"], FAC_EVIDENCE_SYSTEM)
+        self.assertIn("Write a brief Reason first", messages[-1]["content"])
 
     def test_missing_query_or_answer_is_unscored(self):
         for query, answer in (("", "answer"), ("query", ""), ("query", None)):

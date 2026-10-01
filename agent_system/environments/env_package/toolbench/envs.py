@@ -24,7 +24,9 @@ class ToolBenchMultiProcessEnv:
         self.client = StableToolBenchClient(env_config.toolbench)
         self.evaluator = StableToolBenchEvaluator(env_config.toolbench.get("evaluator", {}))
         self.envs: list[dict[str, Any]] = []
-        self._executor = ThreadPoolExecutor(max_workers=min(self.batch_size, 64))
+        # Queue at the executor instead of letting surplus workers time out
+        # waiting for the client semaphore before their HTTP request even starts.
+        self._executor = ThreadPoolExecutor(max_workers=min(self.batch_size, self.client.max_concurrency))
         if not self.evaluator.configured:
             logger.warning(
                 "No StableToolBench answer evaluator configured: task outcomes will be "
@@ -33,9 +35,8 @@ class ToolBenchMultiProcessEnv:
 
     @staticmethod
     def _initial_observation(record: dict[str, Any]) -> str:
-        system = str(record.get("system_prompt") or "").strip()
-        query = str(record.get("query") or "").strip()
-        return f"{system}\n\nUser query:\n{query}\nBegin!" if system else f"Task: {query}\nBegin!"
+        from .protocol import initial_observation
+        return initial_observation(record.get("system_prompt"), record.get("query"))
 
     def _finish(self, record, final_answer, reason, valid=True):
         state = record["_state"]
@@ -45,7 +46,8 @@ class ToolBenchMultiProcessEnv:
         result = self.evaluator.evaluate(str(record.get("query", "")), final_answer)
         state["evaluation"] = {
             "status": result.status, "score": result.score, "reason": result.reason,
-            "judge_model": self.evaluator.model,
+            "judge_model": self.evaluator.model, "judge_mode": self.evaluator.mode,
+            "attempts": list(result.attempts),
         }
         # No submitted answer within the budget is a protocol failure.
         # Missing judge configuration remains explicitly unscored.
@@ -99,6 +101,13 @@ class ToolBenchMultiProcessEnv:
             )
             reward = -0.05
             info = {"tool_calling": False, "is_action_valid": 0, "response_source": "invalid_action"}
+            if state["generations"] and state["generations"][-1].get("finish_reason") == "length":
+                observation = (
+                    "Your previous response hit the output token limit before completing a valid action. "
+                    "No tool was executed. Return one short Action/Action Input pair with complete JSON. "
+                    "For Finish, summarize relevant results instead of copying long raw lists."
+                )
+                info["response_error_code"] = "generation_truncated"
         else:
             state["tool_calls"] += 1
             try:
@@ -116,7 +125,7 @@ class ToolBenchMultiProcessEnv:
             state["response_sources"][source] = state["response_sources"].get(source, 0) + 1
             observation = (
                 f"Tool response ({source}):\n{json.dumps(response, ensure_ascii=False)}"
-                "\n\nContinue with one Thought/Action/Action Input step."
+                "\n\nReturn exactly one Action/Action Input pair, then stop."
             )
         state["history"].append({"action": action, "observation": observation})
         info.update({"won": False, "data_source": record.get("benchmark", "toolbench")})
@@ -135,7 +144,7 @@ class ToolBenchMultiProcessEnv:
         self.envs = [dict(item) for item in kwargs]
         for record in self.envs:
             record["_state"] = {
-                "step": 0, "done": False, "history": [], "tool_calls": 0,
+                "step": 0, "done": False, "history": [], "generations": [], "tool_calls": 0,
                 "response_sources": {}, "final_answer": "", "answer_submitted": False,
                 "termination_reason": "", "evaluation": {"status": "unscored", "score": None, "reason": "not_finished"},
             }
@@ -144,10 +153,17 @@ class ToolBenchMultiProcessEnv:
             for record in self.envs
         ]
 
-    def step(self, actions: list[str]):
+    def step(self, actions: list[str], generation_metadata=None):
         if len(actions) != len(self.envs):
             raise ValueError(f"received {len(actions)} actions for {len(self.envs)} tasks")
+        for i, record in enumerate(self.envs):
+            if not record["_state"]["done"]:
+                record["_state"]["generations"].append({"text": actions[i], **((generation_metadata[i] or {}) if generation_metadata is not None else {})})
+        active = [not record["_state"]["done"] for record in self.envs]
         results = list(self._executor.map(lambda pair: self._step_one(*pair), enumerate(actions)))
+        for record, result, was_active in zip(self.envs, results, active):
+            if was_active:
+                record["_state"]["generations"][-1]["is_action_valid"] = bool(result[3].get("is_action_valid"))
         observations, rewards, dones, infos = zip(*results)
         return list(observations), list(rewards), list(dones), list(infos)
 
@@ -164,6 +180,7 @@ class ToolBenchMultiProcessEnv:
                 "response_sources": dict(record["_state"]["response_sources"]),
                 "evaluation": dict(record["_state"]["evaluation"]),
                 "history": list(record["_state"]["history"]),
+                "generations": list(record["_state"]["generations"]),
             }
             for record in self.envs
         ]

@@ -187,11 +187,16 @@ versioned subset of its official solvable queries. By default:
 | Tool responses after a local disk-cache miss | `http://10.8.176.56:8001/v1` | `MirrorAPI-Cache` |
 | Final-answer scoring | `http://10.8.176.56:8000/v1` | `MirrorAPI` |
 
-The judge uses the upstream FAC prompt with the user-selected MirrorAPI model.
+The judge uses a calibrated, evidence-first completeness prompt (`fac_evidence`)
+with the user-selected MirrorAPI model. The original upstream prompt remains
+available with `TOOLBENCH_JUDGE_MODE=fac_prompt`.
 These are MirrorAPI judge results, not results from the dedicated upstream
 `stabletoolbench/Evaluator` model. An answer submission alone is never a success.
 Judge transport or parsing failures are recorded separately, and an incomplete
-judge run has no full-dataset success-rate metric.
+judge run has no full-dataset success-rate metric. The judge still makes semantic
+errors: the production adapter passed 30/32 simple controls, so this metric is
+not a guarantee of factual accuracy. Reproduce the controls with
+`python -m scripts.calibrate_toolbench_judge --output outputs/judge-controls.json`.
 
 Expected data layout:
 
@@ -202,7 +207,7 @@ data/
 |  |- tools/
 |  |- tool_response_cache/
 |  `- solvable_queries/
-`- toolbench_stable_processed/
+`- toolbench_stable_processed_v2/
 ```
 
 The new preprocessing path removes duplicate training queries and excludes all
@@ -233,9 +238,18 @@ For authenticated servers, set `STABLETOOLBENCH_API_KEY` and
 put into command-line overrides. Private model endpoints bypass environment
 HTTP proxies by default.
 
-Each turn preserves the original task and tool definitions. If history exceeds
-the prompt budget, oldest turns are dropped first; a shortened latest turn is
-marked explicitly. The initial task is never silently left-truncated.
+Each turn uses real user/assistant message roles and preserves the original task
+and tool definitions. Only executed actions and environment feedback enter later
+context; reasoning and invalid model output remain in audit records. If history
+exceeds the prompt budget, oldest complete turns are dropped first; a shortened
+latest turn is marked explicitly. The initial task is never silently truncated.
+
+The launcher defaults to Qwen3 non-thinking mode for the 1,024-token action budget
+and stops generation at environment-response boundaries. `ENABLE_THINKING=True`
+is an explicit opt-in and requires rechecking the generation budget. Validation
+records include raw generation text, finish/stop reasons, token counts, and all
+judge attempts. Malformed judge completions are retried once; unresolved errors
+retain no task score.
 
 Validation saves final answers, judge statuses/reasons, tool-response sources,
 and interaction histories to `$OUTPUT_DIR/validation/<step>.jsonl`. Metrics use
@@ -281,7 +295,7 @@ bash examples/grpo_trainer/run_toolbench_qwen3_3gpu_fresh.sh
 
 The launcher defaults to 2,048 training tasks, 128 validation tasks across six
 official groups, a training/minibatch size of 12, and eight rollouts per training
-task. It uses `data/toolbench_stable_processed/{train,test}.parquet` and writes
+task. It uses `data/toolbench_stable_processed_v2/{train,test}.parquet` and writes
 checkpoints to a new
 `$HOME/model/ckpt/grpo_qwen3_1.7b_stabletoolbench_gpu125_fresh_<timestamp>`
 directory. Initial validation runs before training; subsequent validation and
@@ -290,8 +304,8 @@ requires an output directory that does not already exist.
 
 Tool calls first check the local StableToolBench response cache by actual
 arguments, then use **MirrorAPI-Cache** at `http://10.8.176.56:8001/v1` on a miss.
-**MirrorAPI** at `http://10.8.176.56:8000/v1` scores final answers using the upstream
-FAC prompt. Report these scores with the configured MirrorAPI judge identified;
+**MirrorAPI** at `http://10.8.176.56:8000/v1` scores final answers using the custom
+`fac_evidence` completeness prompt. Report these scores with both judge and mode identified;
 the official dedicated FAC evaluator is a separate model. These remote services
 must already be running before the launcher starts.
 
@@ -303,7 +317,7 @@ TRAIN_SIZE=2048 \
 VAL_SIZE=128 \
 TRAIN_BATCH_SIZE=12 \
 PPO_MINI_BATCH_SIZE=12 \
-DATA_DIR=$PWD/data/toolbench_stable_processed \
+DATA_DIR=$PWD/data/toolbench_stable_processed_v2 \
 OUTPUT_DIR=$HOME/model/ckpt/toolbench-grpo-$(date +%Y%m%d_%H%M%S) \
 MIRRORAPI_CACHE_URL=http://10.8.176.56:8001/v1 \
 TOOLBENCH_JUDGE_URL=http://10.8.176.56:8000/v1 \
@@ -320,7 +334,7 @@ and `PYTHON_BIN` as above:
   --tool-root data/StableToolBench/tools \
   --eval-query-dir data/StableToolBench/solvable_queries \
   --download-eval-queries \
-  --output-dir data/toolbench_stable_processed \
+  --output-dir data/toolbench_stable_processed_v2 \
   --tokenizer "$MODEL_PATH" \
   --max-initial-prompt-tokens 3584 \
   --train-size 2048 \
@@ -329,7 +343,7 @@ and `PYTHON_BIN` as above:
 
 The preparation step excludes all official evaluation queries from training and
 records duplicate removals, prompt filtering, source hashes, and group sizes in
-`data/toolbench_stable_processed/metadata.json`. The launcher rechecks the same
+`data/toolbench_stable_processed_v2/metadata.json`. The launcher rechecks the same
 sources before each run. See the ToolBench setup section above for the expected
 tool/cache directory layout, endpoint credentials, and validation output fields.
 

@@ -365,11 +365,11 @@ env:
     trust_env: False
     evaluator:
       enabled: True
-      mode: fac_prompt
+      mode: fac_evidence
       api_base: "http://10.8.176.56:8000/v1"
       model: MirrorAPI
       api_key_env: STABLETOOLBENCH_JUDGE_API_KEY
       request_timeout: 60
       max_concurrency: 8
-      max_tokens: 512
+      max_tokens: 1024
       trust_env: False

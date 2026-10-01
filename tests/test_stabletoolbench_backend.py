@@ -174,6 +174,19 @@ class StableToolBenchBackendTests(unittest.TestCase):
             self.client.execute(self.mapping, {"a": 1, "b": 2})
         self.assertEqual(raised.exception.code, "ambiguous_cache")
 
+    def test_conflicting_cache_key_does_not_disable_unrelated_hits_or_misses(self):
+        self.cache({"{'city': 'Sacramento'}": {"error": "", "response": "first"},
+                    '{"city":"Sacramento"}': {"error": "", "response": "second"},
+                    '{"city":"Memphis"}': {"error": "", "response": "correct"}})
+        session = self.mock_session()
+        response, source = self.client.execute(self.mapping, {"city": "Memphis"})
+        self.assertEqual((response["response"], source), ("correct", "disk_cache"))
+        session.post.assert_not_called()
+        self.assertEqual(self.client.execute(self.mapping, {"city": "Paris"})[1], "mirrorapi_cache")
+        with self.assertRaises(Error) as raised:
+            self.client.execute(self.mapping, {"city": "Sacramento"})
+        self.assertEqual(raised.exception.code, "ambiguous_cache")
+
     def test_proxy_disabled_and_api_key_environment_supported(self):
         self.assertFalse(self.client._session().trust_env)
         with patch.dict("os.environ", {"TEST_MIRROR_KEY": "secret"}):

@@ -223,6 +223,9 @@ class vLLMRollout(BaseRollout):
             if hasattr(SamplingParams(), str(k)):
                 kwargs[k] = config.get(k)
 
+        if config.get("toolbench_single_action", False):
+            from agent_system.environments.env_package.toolbench.protocol import ACTION_STOPS
+            kwargs.update(stop=list(ACTION_STOPS), detokenize=True)
         print(f"kwargs: {kwargs}")
         self.sampling_params = SamplingParams(**kwargs)
 
@@ -330,11 +333,16 @@ class vLLMRollout(BaseRollout):
             # if n = 1: (bs, response_length) ; if n > 1: (bs * n, response_length)
 
             response = []
+            generation_metadata = []
             rollout_log_probs = []
             for output in outputs:
                 for sample_id in range(len(output.outputs)):
                     response_ids = output.outputs[sample_id].token_ids
                     response.append(response_ids)
+                    completion = output.outputs[sample_id]
+                    generation_metadata.append({"finish_reason": completion.finish_reason,
+                                                "stop_reason": completion.stop_reason,
+                                                "token_count": len(response_ids), "action_text": completion.text})
                     curr_log_prob = []
                     for i, logprob in enumerate(output.outputs[sample_id].logprobs):
                         curr_log_prob.append(logprob[response_ids[i]].logprob)
@@ -367,7 +375,10 @@ class vLLMRollout(BaseRollout):
         # position_ids:   [0,0,0,0,0,1,2,3, | 4,5,6,7,8,9,10,11]
         response_position_ids = position_ids[..., -1:] + delta_position_id
         position_ids = torch.cat([position_ids, response_position_ids], dim=-1)
-        response_attention_mask = get_response_mask(response_id=response, eos_token=eos_token_id, dtype=attention_mask.dtype)
+        response_attention_mask = get_response_mask(
+            response_id=response, eos_token=eos_token_id, dtype=attention_mask.dtype,
+            response_lengths=[item["token_count"] for item in generation_metadata],
+        )
         attention_mask = torch.cat((attention_mask, response_attention_mask), dim=-1)
 
         # all the tp ranks should contain the same data here. data in all ranks are valid
@@ -394,6 +405,10 @@ class vLLMRollout(BaseRollout):
         ):
             self.inference_engine.free_cache_engine()
 
+        for key in ("finish_reason", "stop_reason", "token_count"):
+            non_tensor_batch["generation_" + key] = np.asarray([item[key] for item in generation_metadata], dtype=object)
+        if self.sampling_params.detokenize:
+            non_tensor_batch["generation_action_text"] = np.asarray([item["action_text"] for item in generation_metadata], dtype=object)
         return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
 
 

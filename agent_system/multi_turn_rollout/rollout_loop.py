@@ -50,10 +50,10 @@ class TrajectoryCollector:
         This is used by OPID teacher scoring to reconstruct prompt-enhanced inputs.
         """
         apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
-        chat = np.array([{
+        chat = [{
             "content": obs_content,
             "role": "user",
-        }])
+        }]
         prompt_with_chat_template = self.tokenizer.apply_chat_template(
             chat,
             add_generation_prompt=True,
@@ -156,22 +156,23 @@ class TrajectoryCollector:
         # Preserve ToolBench task/tool definitions while trimming old history.
         obs_content = ''
         if obs.get("toolbench_context") is not None:
-            from agent_system.environments.env_package.toolbench.context import fit_context
+            from agent_system.environments.env_package.toolbench.context import fit_messages
             context = obs["toolbench_context"][item]
-            obs_content = fit_context(
+            toolbench_messages = fit_messages(
                 context["initial"], context["history"], self.tokenizer,
                 self.config.data.max_prompt_length, apply_chat_template_kwargs,
             )
+            obs_content = "\n\n".join(f"{message['role']}:\n{message['content']}" for message in toolbench_messages)
         elif obs_text is not None:
             obs_content += obs_text
         else:
             print(f"Warning: No text observation found!")
 
         
-        chat = np.array([{
+        chat = toolbench_messages if obs.get("toolbench_context") is not None else [{
             "content": obs_content,
             "role": "user",
-        }])
+        }]
         
         # Apply chat template
         prompt_with_chat_template = self.tokenizer.apply_chat_template(
@@ -266,7 +267,7 @@ class TrajectoryCollector:
         })
 
         if self.config.data.get('return_raw_chat', False):
-            row_dict['raw_prompt'] = chat.tolist()
+            row_dict['raw_prompt'] = list(chat)
         
         return row_dict
 
@@ -473,7 +474,21 @@ class TrajectoryCollector:
             
             text_actions = self.tokenizer.batch_decode(batch.batch['responses'], skip_special_tokens=True)
             
-            next_obs, rewards, dones, infos = envs.step(text_actions)
+            if obs.get("toolbench_context") is not None:
+                generation_metadata = [
+                    {"raw_text": text_actions[i], **{
+                        key: batch.non_tensor_batch.get("generation_" + key, [None] * batch_size)[i]
+                        for key in ("finish_reason", "stop_reason", "token_count")}}
+                    for i in range(batch_size)
+                ]
+                # vLLM removes string-stop text from completion.text, while its
+                # token IDs can still include the stop marker. Execute the text
+                # at the protocol boundary and retain raw token text for audit.
+                if "generation_action_text" in batch.non_tensor_batch:
+                    text_actions = batch.non_tensor_batch["generation_action_text"].tolist()
+                next_obs, rewards, dones, infos = envs.step(text_actions, generation_metadata=generation_metadata)
+            else:
+                next_obs, rewards, dones, infos = envs.step(text_actions)
 
             
             if len(rewards.shape) == 2:

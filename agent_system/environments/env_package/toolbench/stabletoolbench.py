@@ -172,6 +172,9 @@ def validate_response(response: Any, source: str) -> dict[str, Any]:
     return {"error": response["error"], "response": response["response"]}
 
 
+_AMBIGUOUS_CACHE_ENTRY = object()
+
+
 class StableToolBenchClient:
     """Read exact disk-cache hits, otherwise query the configured MirrorAPI model.
 
@@ -245,8 +248,9 @@ class StableToolBenchClient:
             except (ValueError, TypeError, SyntaxError):
                 continue
             if key in index and index[key] != response:
-                raise StableToolBenchError("ambiguous_cache", f"Conflicting responses for equivalent cache keys: {path}", "disk_cache")
-            index[key] = response
+                index[key] = _AMBIGUOUS_CACHE_ENTRY
+            elif key not in index:
+                index[key] = response
         return index
 
     def _read_document(self, category: str, tool: str, api: str) -> dict[str, Any]:
@@ -285,6 +289,8 @@ class StableToolBenchClient:
             cache = self._cache_index(path)
             key = _strict_json(parsed)
             if key in cache:
+                if cache[key] is _AMBIGUOUS_CACHE_ENTRY:
+                    raise StableToolBenchError("ambiguous_cache", f"Conflicting responses for the requested cache key: {path}", "disk_cache")
                 return validate_response(cache[key], "disk_cache"), "disk_cache"
         if mapping.get("api_schema_json"):
             try:
