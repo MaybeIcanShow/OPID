@@ -1,0 +1,30 @@
+{
+  "recorded_at": "2026-10-01T02:13:38.433827",
+  "scope": "historical completed step 1 from a run that later OOMed versus new completed step 2; observational comparison, no ablation",
+  "historical_log": "grpo_qwen3_1.7b_toolbench_2048.log",
+  "current_log": "outputs/grpo_toolbench_4gpu_20261001_014954/train.log",
+  "old": {
+    "gen": 266.848,
+    "old_log_prob": 240.552,
+    "ref": 232.468,
+    "update_actor": 999.818,
+    "testing": 288.432,
+    "step": 2029.664,
+    "total_tokens": 1207666
+  },
+  "new": {
+    "gen": 239.829,
+    "old_log_prob": 53.631,
+    "ref": 51.232,
+    "update_actor": 332.298,
+    "step": 678.616,
+    "total_tokens": 1181708
+  },
+  "wall_time_ratio": 2.990887335400285,
+  "ratio_excluding_old_validation": 2.5658575689344194,
+  "actual_transition_rows": 1536,
+  "actual_trajectories": 128,
+  "actual_tasks": 16,
+  "global_optimizer_updates_per_outer_step": 96,
+  "new_actor_mfu_estimate": 0.097
+}

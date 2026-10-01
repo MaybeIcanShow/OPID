@@ -55,7 +55,8 @@ conda create -n opid python==3.12 -y
 conda activate opid
 
 pip3 install vllm==0.11.0
-pip3 install flash-attn==2.7.4.post1 --no-build-isolation --no-cache-dir
+FLASH_ATTENTION_FORCE_BUILD=TRUE FLASH_ATTN_CUDA_ARCHS=89 MAX_JOBS=8 \
+  pip3 install flash-attn==2.7.4.post1 --no-build-isolation --no-cache-dir
 pip install -e .
 ```
 
@@ -178,40 +179,74 @@ bash examples/search/retriever/retrieval_launch.sh > retrieval_server.log
 
 #### 4. ToolBench
 
-ToolBench GRPO uses ToolBench trajectories together with the StableToolBench tool
-definitions and cached tool responses. These large data assets are not tracked in
-this repository. Download them from [ToolBench](https://github.com/OpenBMB/ToolBench)
-and [StableToolBench](https://github.com/THUDM/StableToolBench), then place them at
-the paths expected by the preprocessing script:
+ToolBench GRPO now executes tools through StableToolBench and validates on a
+versioned subset of its official solvable queries. By default:
 
-```
+| Role | Endpoint | Model |
+| --- | --- | --- |
+| Tool responses after a local disk-cache miss | `http://10.8.176.56:8001/v1` | `MirrorAPI-Cache` |
+| Final-answer scoring | `http://10.8.176.56:8000/v1` | `MirrorAPI` |
+
+The judge uses the upstream FAC prompt with the user-selected MirrorAPI model.
+These are MirrorAPI judge results, not results from the dedicated upstream
+`stabletoolbench/Evaluator` model. An answer submission alone is never a success.
+Judge transport or parsing failures are recorded separately, and an incomplete
+judge run has no full-dataset success-rate metric.
+
+Expected data layout:
+
+```text
 data/
 |- ToolBench/toolllama_G123_dfs_train.json
-`- StableToolBench/server/
-   |- tools/
-   `- tool_response_cache/
+|- StableToolBench/
+|  |- tools/
+|  |- tool_response_cache/
+|  `- solvable_queries/
+`- toolbench_stable_processed/
 ```
 
-Install the StableToolBench server dependencies if you want to serve responses for
-actions that are not present in the local cache:
+The new preprocessing path removes duplicate training queries and excludes all
+official evaluation queries from training. It selects validation tasks across
+all six official groups and records the source revision, hashes, exclusions,
+and group counts in `metadata.json`. It uses the full task and tool definitions
+when checking prompt length. Existing `data/toolbench_processed` is retained
+as historical data.
+
+Local response-cache lookup follows the upstream directory convention and
+matches the actual JSON arguments. A miss calls the selected remote simulator;
+demonstration responses are no longer replayed by tool name alone. The cache
+client does not load a local GPU model. Set
+`TOOLBENCH_BACKEND=mirrorapi` to use the other simulator explicitly.
+
+Override the deployment without editing code:
 
 ```bash
-pip install -r data/StableToolBench/server/requirements.txt
+MIRRORAPI_CACHE_URL=http://10.8.176.56:8001/v1 \
+MIRRORAPI_CACHE_MODEL=MirrorAPI-Cache \
+TOOLBENCH_JUDGE_URL=http://10.8.176.56:8000/v1 \
+TOOLBENCH_JUDGE_MODEL=MirrorAPI \
+bash examples/grpo_trainer/run_toolbench_qwen3_3gpu_fresh.sh
 ```
 
-The training environment first uses responses included in the trajectory, then the
-local `tool_response_cache`, and finally the HTTP service configured by
-`STABLETOOLBENCH_SERVICE_URL`. To start the reference virtual service, configure
-`data/StableToolBench/server/config.yml` and run:
+For authenticated servers, set `STABLETOOLBENCH_API_KEY` and
+`STABLETOOLBENCH_JUDGE_API_KEY`; keys are read from the environment rather than
+put into command-line overrides. Private model endpoints bypass environment
+HTTP proxies by default.
 
-```bash
-cd data/StableToolBench/server
-python main.py
-cd ../../../
-```
+Each turn preserves the original task and tool definitions. If history exceeds
+the prompt budget, oldest turns are dropped first; a shortened latest turn is
+marked explicitly. The initial task is never silently left-truncated.
 
-Set `STABLETOOLBENCH_SERVICE_URL` to the server's `/virtual` endpoint when its port
-differs from the training script default (`http://127.0.0.1:12001/virtual`).
+Validation saves final answers, judge statuses/reasons, tool-response sources,
+and interaction histories to `$OUTPUT_DIR/validation/<step>.jsonl`. Metrics use
+the `val/stabletoolbench/` prefix, including `judge_coverage`,
+`judge_success_rate`, per-group results, and cache/simulator response counts.
+An additional `episode_reward_mean` is trajectory-weighted; the older
+`test_score` remains step-weighted for compatibility.
+
+Use a fresh output directory when switching from the old data and reward
+protocol. Old checkpoints' optimizer/data-loader progress does not describe
+the new deduplicated dataset.
 
 ## Training
 
@@ -233,41 +268,70 @@ bash examples/opid_trainer/run_search_opid_guide_qwen3.sh
 
 ### ToolBench GRPO
 
-The Qwen3 ToolBench script preprocesses the source data and launches multi-turn
-GRPO in one command:
+The fresh-run launcher prepares the deduplicated training data and official
+StableToolBench validation subset, then starts Qwen3 GRPO on GPUs **1, 2, 5**:
 
 ```bash
 export MODEL_PATH=$HOME/model/Qwen3-1.7B
 export PYTHON_BIN=$HOME/miniconda3/envs/opid/bin/python
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1,2,5
 
-bash examples/grpo_trainer/run_toolbench_qwen3.sh
+bash examples/grpo_trainer/run_toolbench_qwen3_3gpu_fresh.sh
 ```
 
-By default, preprocessing writes 2,048 training examples and 128 validation
-examples to `data/toolbench_processed/`, and checkpoints are written to
-`$HOME/model/ckpt/grpo_qwen3_1.7b_toolbench_2048`. Override paths and sizes with
-environment variables:
+The launcher defaults to 2,048 training tasks, 128 validation tasks across six
+official groups, a training/minibatch size of 12, and eight rollouts per training
+task. It uses `data/toolbench_stable_processed/{train,test}.parquet` and writes
+checkpoints to a new
+`$HOME/model/ckpt/grpo_qwen3_1.7b_stabletoolbench_gpu125_fresh_<timestamp>`
+directory. Initial validation runs before training; subsequent validation and
+checkpoint saves occur every 10 steps. The fresh launcher disables resume and
+requires an output directory that does not already exist.
+
+Tool calls first check the local StableToolBench response cache by actual
+arguments, then use **MirrorAPI-Cache** at `http://10.8.176.56:8001/v1` on a miss.
+**MirrorAPI** at `http://10.8.176.56:8000/v1` scores final answers using the upstream
+FAC prompt. Report these scores with the configured MirrorAPI judge identified;
+the official dedicated FAC evaluator is a separate model. These remote services
+must already be running before the launcher starts.
+
+Override dataset and output paths, sizes, or deployed endpoints with environment
+variables, keeping three-GPU batch sizes divisible by three:
 
 ```bash
 TRAIN_SIZE=2048 \
 VAL_SIZE=128 \
-DATA_DIR=$PWD/data/toolbench_processed \
-OUTPUT_DIR=$HOME/model/ckpt/toolbench-grpo \
-STABLETOOLBENCH_SERVICE_URL=http://127.0.0.1:12001/virtual \
-bash examples/grpo_trainer/run_toolbench_qwen3.sh
+TRAIN_BATCH_SIZE=12 \
+PPO_MINI_BATCH_SIZE=12 \
+DATA_DIR=$PWD/data/toolbench_stable_processed \
+OUTPUT_DIR=$HOME/model/ckpt/toolbench-grpo-$(date +%Y%m%d_%H%M%S) \
+MIRRORAPI_CACHE_URL=http://10.8.176.56:8001/v1 \
+TOOLBENCH_JUDGE_URL=http://10.8.176.56:8000/v1 \
+bash examples/grpo_trainer/run_toolbench_qwen3_3gpu_fresh.sh
 ```
 
-To create the Parquet files separately, run:
+To prepare data separately, including downloading missing official evaluation
+queries at the pinned revision, run the following after setting `MODEL_PATH`
+and `PYTHON_BIN` as above:
 
 ```bash
-python -m examples.data_preprocess.preprocess_toolbench \
+"$PYTHON_BIN" -m examples.data_preprocess.preprocess_toolbench \
   --source data/ToolBench/toolllama_G123_dfs_train.json \
-  --tool-root data/StableToolBench/server/tools \
-  --output-dir data/toolbench_processed \
+  --tool-root data/StableToolBench/tools \
+  --eval-query-dir data/StableToolBench/solvable_queries \
+  --download-eval-queries \
+  --output-dir data/toolbench_stable_processed \
+  --tokenizer "$MODEL_PATH" \
+  --max-initial-prompt-tokens 3584 \
   --train-size 2048 \
   --val-size 128
 ```
+
+The preparation step excludes all official evaluation queries from training and
+records duplicate removals, prompt filtering, source hashes, and group sizes in
+`data/toolbench_stable_processed/metadata.json`. The launcher rechecks the same
+sources before each run. See the ToolBench setup section above for the expected
+tool/cache directory layout, endpoint credentials, and validation output fields.
 
 Useful OPID parameters:
 
