@@ -23,6 +23,7 @@ from transformers import AutoTokenizer
 from agent_system.environments.env_manager import ToolBenchEnvironmentManager
 from agent_system.environments.env_package.toolbench.context import fit_messages
 from agent_system.environments.env_package.toolbench.envs import ToolBenchMultiProcessEnv
+from agent_system.environments.env_package.toolbench.evaluation import FAC_PROMPT
 from agent_system.environments.env_package.toolbench.metrics import summarize_evaluations
 from agent_system.environments.env_package.toolbench.projection import toolbench_projection
 from agent_system.environments.env_package.toolbench.protocol import ACTION_STOPS
@@ -32,6 +33,13 @@ def write_json(path, value):
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
     temporary.replace(path)
+
+
+def resume_metadata_matches(existing, current):
+    """Allow throughput-only settings to change when resuming saved trajectories."""
+    mutable = {"batch_size", "concurrency"}
+    return all(existing.get(key) == value for key, value in current.items()
+               if key not in mutable)
 
 
 def log(event, **fields):
@@ -53,6 +61,46 @@ def summarize(records):
     metrics["tool_error_codes"] = dict(Counter(e["response_error_code"] for e in tool_events
                                                if e.get("response_error_code")))
     metrics["invalid_actions"] = sum(not e["is_action_valid"] for e in events)
+    # For multi-sample evaluation, keep the first trajectory and the complete
+    # sample group separate so judge errors are visible instead of becoming 0.
+    grouped = {}
+    for record in records:
+        task_id = str(record.get("task_record_id", record.get("record_id", "")))
+        grouped.setdefault(task_id, []).append(record)
+    if grouped:
+        first = [next(row for row in rows if int(row.get("sample_index", 0)) == 0)
+                 for rows in grouped.values() if any(int(row.get("sample_index", 0)) == 0 for row in rows)]
+        first_scored = [row for row in first if row["evaluation"]["status"] in ("success", "failure")]
+        metrics["pass1_tasks"] = len(first)
+        metrics["pass1_scored_tasks"] = len(first_scored)
+        metrics["pass1_judge_coverage"] = len(first_scored) / len(first) if first else 0.0
+        metrics["pass1_success_tasks"] = sum(row["evaluation"]["status"] == "success" for row in first_scored)
+        if first_scored:
+            metrics["pass1_success_rate_scored_subset"] = metrics["pass1_success_tasks"] / len(first_scored)
+        complete = [rows for rows in grouped.values() if len(rows) == max(
+            int(row.get("sample_index", 0)) for row in records
+        ) + 1]
+        metrics["pass8_tasks"] = len(grouped)
+        metrics["pass8_complete_groups"] = len(complete)
+        metrics["pass8_any_success_tasks"] = sum(
+            any(row["evaluation"]["status"] == "success" for row in rows) for rows in complete
+        )
+        if complete:
+            metrics["pass8_rate"] = metrics["pass8_any_success_tasks"] / len(complete)
+        complete_scored = [rows for rows in complete if all(
+            row["evaluation"]["status"] in ("success", "failure") for row in rows
+        )]
+        metrics["pass8_fully_scored_groups"] = len(complete_scored)
+        if complete_scored:
+            metrics["pass8_rate_fully_scored"] = sum(
+                any(row["evaluation"]["status"] == "success" for row in rows)
+                for rows in complete_scored
+            ) / len(complete_scored)
+        scored = [row for row in records if row["evaluation"]["status"] in ("success", "failure")]
+        metrics["mean_judge_score"] = (
+            sum(float(row["evaluation"]["score"]) for row in scored) / len(scored)
+            if scored else None
+        )
     return metrics
 
 
@@ -62,10 +110,9 @@ def evaluate_backend(args, records, tokenizer, model, sampling_class, backend, b
     metadata = {**base_metadata, "backend": backend}
     metadata_path = output / "metadata.json"
     if metadata_path.exists():
-        if json.loads(metadata_path.read_text()) != metadata:
+        if not resume_metadata_matches(json.loads(metadata_path.read_text()), metadata):
             raise ValueError(f"Resume configuration differs: {metadata_path}")
-    else:
-        write_json(metadata_path, metadata)
+    write_json(metadata_path, metadata)
     results_path = output / "results.jsonl"
     completed = [json.loads(line) for line in results_path.read_text().splitlines()] if results_path.exists() else []
     completed_ids = {str(r["record_id"]) for r in completed}
@@ -86,7 +133,7 @@ def evaluate_backend(args, records, tokenizer, model, sampling_class, backend, b
     config.toolbench.max_concurrency = args.concurrency
     config.toolbench.evaluator.api_base = "http://10.8.176.56:8000/v1"
     config.toolbench.evaluator.model = "MirrorAPI"
-    config.toolbench.evaluator.mode = "fac_evidence"
+    config.toolbench.evaluator.mode = "fac_prompt"
     config.toolbench.evaluator.enabled = True
     config.toolbench.evaluator.max_concurrency = args.concurrency
     for offset in range(0, len(pending), args.batch_size):
@@ -113,9 +160,14 @@ def evaluate_backend(args, records, tokenizer, model, sampling_class, backend, b
                     prompts.append(prompt)
                     if step == 0:
                         prompt_hashes[index] = hashlib.sha256(prompt.encode()).hexdigest()
-                    # Each record/round gets the same seed across all four runs.
-                    seed = int(hashlib.sha256(f"42:{batch[index]['record_id']}:{step}".encode()).hexdigest()[:8], 16)
-                    parameters.append(sampling_class(temperature=args.temperature, top_p=1.0, top_k=-1,
+                    # Keep the seed stable across backends while changing it per
+                    # query/sample/round for reproducible pass@k sampling.
+                    task_id = batch[index].get("_task_record_id", batch[index]["record_id"])
+                    sample_index = batch[index].get("_sample_index", 0)
+                    seed = int(hashlib.sha256(
+                        f"42:{task_id}:{sample_index}:{step}".encode()
+                    ).hexdigest()[:8], 16)
+                    parameters.append(sampling_class(temperature=args.temperature, top_p=args.top_p, top_k=args.top_k,
                                                      max_tokens=1024, stop=ACTION_STOPS, seed=seed))
                 generation_started = time.monotonic()
                 completions = model.generate(prompts, parameters, use_tqdm=False)
@@ -153,7 +205,11 @@ def evaluate_backend(args, records, tokenizer, model, sampling_class, backend, b
                     break
             batch_results = manager.get_evaluation_records()
             for index, result in enumerate(batch_results):
-                result.update(weight_label=args.label, backend=backend, episode_reward=float(rewards[index]),
+                source_record = batch[index]
+                result.update(weight_label=args.label, backend=backend,
+                              task_record_id=str(source_record.get("_task_record_id", source_record["record_id"])),
+                              sample_index=int(source_record.get("_sample_index", 0)),
+                              trajectory_id=result["record_id"], episode_reward=float(rewards[index]),
                               step_events=events[index], first_prompt_sha256=prompt_hashes[index])
             with results_path.open("a") as stream:
                 for result in batch_results:
@@ -185,25 +241,44 @@ def main():
     parser.add_argument("--sample-size", type=int, default=128)
     parser.add_argument("--max-steps", type=int, default=12)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--top-p", type=float, default=1.0)
+    parser.add_argument("--top-k", type=int, default=-1)
+    parser.add_argument("--samples-per-task", type=int, default=1)
     parser.add_argument("--disk-cache", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
+    if args.samples_per_task < 1:
+        parser.error("samples-per-task must be positive")
+    if args.temperature < 0 or not 0 < args.top_p <= 1:
+        parser.error("temperature must be nonnegative and top-p must be in (0, 1]")
     label_directory = Path(args.output) / args.label
     label_directory.mkdir(parents=True, exist_ok=True)
     # A supervisor may resume a model while an earlier invocation is still live.
     # Serialize invocations for this output label before loading another engine.
-    lock = (label_directory / ".evaluation.lock").open("a")
+    lock_name = ".evaluation." + "+".join(sorted(args.backends)) + ".lock"
+    lock = (label_directory / lock_name).open("a")
     fcntl.flock(lock, fcntl.LOCK_EX)
     data_path = Path(args.data).resolve()
     rows = pq.read_table(data_path).to_pylist()[:args.sample_size]
-    records = [row["env_kwargs"] for row in rows]
-    if not records or len({str(r["record_id"]) for r in records}) != len(records):
+    base_records = [row["env_kwargs"] for row in rows]
+    if not base_records or len({str(r["record_id"]) for r in base_records}) != len(base_records):
         raise ValueError("Expected a nonempty dataset with unique record IDs")
+    records = []
+    for sample_index in range(args.samples_per_task):
+        for source_record in base_records:
+            task_id = str(source_record["record_id"])
+            record = dict(source_record)
+            record["record_id"] = f"{task_id}__sample_{sample_index}"
+            record["_task_record_id"] = task_id
+            record["_sample_index"] = sample_index
+            records.append(record)
     model_path = Path(args.model).resolve()
     metadata = {"weight_label": args.label, "model": str(model_path), "data": str(data_path),
                 "data_sha256": hashlib.sha256(data_path.read_bytes()).hexdigest(),
-                "record_ids": [r["record_id"] for r in records], "disk_cache": args.disk_cache,
-                "generation": {"temperature": args.temperature, "top_p": 1.0, "top_k": -1,
-                               "seed_scheme": "sha256(42:record_id:zero_based_round)[:8]",
+                "record_ids": [r["record_id"] for r in base_records],
+                "trajectory_count": len(records), "disk_cache": args.disk_cache,
+                "generation": {"temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k,
+                               "samples_per_task": args.samples_per_task,
+                               "seed_scheme": "sha256(42:task_record_id:sample_index:zero_based_round)[:8]",
                                "thinking": False, "prompt_tokens": 4096, "response_tokens": 1024,
                                "max_steps": args.max_steps, "stop": ACTION_STOPS},
                 "tool_urls": {"mirrorapi": "http://10.8.176.56:8000/v1",
@@ -211,7 +286,8 @@ def main():
                 "tool_models": {"mirrorapi": "MirrorAPI", "mirrorapi_cache": "MirrorAPI-Cache"},
                 "tool_temperature": 0, "tool_max_tokens": 2048, "tool_seed": 42,
                 "judge": {"url": "http://10.8.176.56:8000/v1", "model": "MirrorAPI",
-                          "mode": "fac_evidence", "max_tokens": 1024},
+                          "mode": "fac_prompt", "max_tokens": 1024,
+                          "prompt_sha256": hashlib.sha256(FAC_PROMPT.encode()).hexdigest()},
                 "batch_size": args.batch_size, "concurrency": args.concurrency}
     all_complete = True
     for backend in args.backends:
@@ -222,7 +298,7 @@ def main():
             continue
         summary = json.loads(summary_path.read_text())
         expected_metadata = {**metadata, "backend": backend}
-        if summary["metadata"] != expected_metadata:
+        if not resume_metadata_matches(summary["metadata"], expected_metadata):
             raise ValueError(f"Resume configuration differs: {summary_path}")
         all_complete &= bool(summary["complete"])
     if all_complete:

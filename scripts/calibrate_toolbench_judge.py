@@ -18,7 +18,7 @@ from agent_system.environments.env_package.toolbench.evaluation import StableToo
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", default="tests/fixtures/toolbench_judge_calibration.json")
-    parser.add_argument("--mode", choices=("fac_prompt", "fac_evidence"), default="fac_evidence")
+    parser.add_argument("--mode", choices=("fac_prompt", "fac_evidence"), default="fac_prompt")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     cases = json.loads(Path(args.cases).read_text())

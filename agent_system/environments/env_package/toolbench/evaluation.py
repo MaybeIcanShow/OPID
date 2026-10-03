@@ -4,8 +4,8 @@ The official FAC user prompt is retained verbatim and sent through the selected
 model's normal chat template. ``stabletoolbench_fac`` is intended for the dedicated
 ``stabletoolbench/Evaluator`` model. ``fac_prompt`` supports a user-selected judge,
 including MirrorAPI, but its results are not official StableToolBench FAC scores.
-``fac_evidence`` uses a compact completeness rubric with evidence before the verdict;
-it is the calibrated custom protocol used by the MirrorAPI launcher.
+``fac_prompt`` is the default production protocol. ``fac_evidence`` remains available
+as an explicit local completeness protocol for reproducing earlier experiments.
 MirrorAPI and MirrorAPI-Cache were originally trained to simulate tools. This adapter
 never interprets a Finish action as proof of success. Missing judges and malformed
 judge responses have no score and must be excluded from success-rate denominators.

@@ -115,7 +115,7 @@ def main():
               "trajectories": sum(len(rows) for rows in sets.values()),
               "all_queries_and_initial_prompts_identical": True, "table": flat,
               "paired_comparisons": comparisons, "full_summaries": summaries,
-              "metric_note": "Custom MirrorAPI fac_evidence completeness judge pass rate; not verified factual accuracy or official StableToolBench score.",
+              "metric_note": "MirrorAPI score using the pinned official FAC prompt; not verified factual accuracy or the dedicated StableToolBench Evaluator score.",
               "cache_note": "Both backends read the same official disk cache first. Cache misses use the selected simulator. Disk cache is read-only.",
               "parser_note": "Same strict JSON adapter as training. Malformed simulator JSON and truncated completions are rejected. Upstream StableToolBench also attempts regex field recovery; these scores therefore measure the current local pipeline, not that upstream behavior.",
               "parser_diagnostic": "mirrorapi_format_probe.json",

@@ -187,9 +187,9 @@ versioned subset of its official solvable queries. By default:
 | Tool responses after a local disk-cache miss | `http://10.8.176.56:8001/v1` | `MirrorAPI-Cache` |
 | Final-answer scoring | `http://10.8.176.56:8000/v1` | `MirrorAPI` |
 
-The judge uses a calibrated, evidence-first completeness prompt (`fac_evidence`)
-with the user-selected MirrorAPI model. The original upstream prompt remains
-available with `TOOLBENCH_JUDGE_MODE=fac_prompt`.
+The judge uses the pinned official StableToolBench FAC prompt (`fac_prompt`)
+with the user-selected MirrorAPI model. The local evidence-first prompt remains
+available only when explicitly selecting `TOOLBENCH_JUDGE_MODE=fac_evidence`.
 These are MirrorAPI judge results, not results from the dedicated upstream
 `stabletoolbench/Evaluator` model. An answer submission alone is never a success.
 Judge transport or parsing failures are recorded separately, and an incomplete
@@ -304,9 +304,9 @@ requires an output directory that does not already exist.
 
 Tool calls first check the local StableToolBench response cache by actual
 arguments, then use **MirrorAPI-Cache** at `http://10.8.176.56:8001/v1` on a miss.
-**MirrorAPI** at `http://10.8.176.56:8000/v1` scores final answers using the custom
-`fac_evidence` completeness prompt. Report these scores with both judge and mode identified;
-the official dedicated FAC evaluator is a separate model. These remote services
+**MirrorAPI** at `http://10.8.176.56:8000/v1` scores final answers using the pinned
+official `fac_prompt`. Report these scores with both judge and mode identified; the
+official dedicated FAC evaluator is a separate model. These remote services
 must already be running before the launcher starts.
 
 Override dataset and output paths, sizes, or deployed endpoints with environment
